@@ -1,0 +1,1396 @@
+---
+title: "Methodological calf temperature questions"
+authors: Andrea Urrutia @UNAM and Marco Ramírez @ UBristol
+output:
+  html_notebook: default
+  pdf_document: default
+  number_sections: yes
+  html_document:
+    df_print: paged
+  word_document: default
+---
+```{r Libraries}
+library(ggplot2)
+library(dplyr)
+library(lattice)
+library(purrr)
+library(car)
+```
+
+
+##1. **Front data**
+
+```{r Read front data}
+frontdata=read.csv(file.choose())
+frontdata=read.csv("~/Desktop/data-front.csv") # read the data into R
+frontdata<-data.frame(frontdata)
+#head(frontdata)
+names(frontdata)
+#summary(frontdata)
+frontdata$calf<- as.character(frontdata$calf)
+
+frontdata<-tbl_df(frontdata)
+```
+
+Note that this dataset has already been cleaned a bit. Some data was removed when two images had <5 seconds between them and they were of the same calf, taken from the same angle. There is still some more tidying to be done, though.
+
+```{r Cleaning front ear data}
+#Just to view the data.
+#frontdata %>%
+#  select(left_ear_average, image) %>%
+#  filter(left_ear_average<15) %>%
+#  arrange(desc(left_ear_average))
+
+#Filter left ear temperature using each calf's minimum ear temperature
+frontdata <- frontdata %>% 
+  mutate(left_ear_average_clean = replace(left_ear_average, (left_ear_average < 20 & calf== "2193") | (left_ear_average < 20 & calf== "2203") | (left_ear_average < 20 & calf== "2220")| (left_ear_average < 20.5 & calf== "2188") | (left_ear_average < 15.5 & calf== "2224") | (left_ear_average < 20 & calf== "2236") | (left_ear_average < 20.5 & calf== "2237") | (left_ear_average < 19 & calf== "2229") | (left_ear_average < 10 & calf=="2121") | (left_ear_average < 15 & calf!="2121"), NA))
+
+#If left_ear_average_clean has an NA value, then left_ear_max_clean should also be NA
+frontdata<- frontdata %>%
+  mutate (left_ear_max_clean = if_else(left_ear_average_clean >0, left_ear_max, 0))
+
+#frontdata %>%
+#  select(right_ear_average, image) %>%
+#  filter(right_ear_average<15) %>%
+#  arrange(desc(right_ear_average))
+
+#Repeat for right ear.
+
+frontdata <- frontdata %>%
+  mutate (right_ear_average_clean = replace(right_ear_average, (right_ear_average < 19 & calf=="2229") | (right_ear_average < 20 & calf=="2188") | (right_ear_average < 20 & calf=="2203") | (right_ear_average < 20 & calf== "2236") | (right_ear_average < 20.5 & calf== "2237") | (right_ear_average < 10 & calf=="2121") | (right_ear_average < 15 & calf!="2121"), NA))
+
+frontdata<- frontdata %>%
+  mutate (right_ear_max_clean = if_else(right_ear_average_clean >0, right_ear_max, 0))
+
+```
+
+When processing images in FLIR Tools, there were some images where one or both ears weren't properly visible so we instead put the "ear line" marker in a random, cold, background region of the image. Therefore, and after taking a look at the ear temperatures, I am replacing any ear temperature values (both max and average ) that are < 15 with "NA". I'm storing these in new variables with the suffix "_clean". After applying this broad 15º filter, there were some calves that had average ear temps > 15 that were still not actually ear temperatures, so I looked at those cases one by one and cleaned them up (that's why the mutate code up there is hairy).
+
+```{r Rename angles}
+frontdata<- frontdata %>%
+  mutate(angle_and_direction_as_factor = case_when(angle_and_direction=="L45"~"-45", angle_and_direction=="L30"~"-30", angle_and_direction=="L15"~"-15", angle_and_direction=="C0"~"0", angle_and_direction=="R15"~"15", angle_and_direction=="R30"~"30", angle_and_direction=="R45"~"45"))
+
+frontdata<- frontdata %>%
+  mutate (elevation_and_direction_as_factor = case_when(elevation_and_direction=="D30"~"-30", elevation_and_direction=="D15"~"-15", elevation_and_direction=="C0"~"0", elevation_and_direction=="U15"~"15", elevation_and_direction=="U30"~"30"))
+
+frontdata <- frontdata %>%
+  mutate(angle_and_direction_numeric = as.numeric(paste(angle_and_direction_as_factor)),
+          elevation_and_direction_numeric = as.numeric(paste(elevation_and_direction_as_factor)))
+
+frontdata$angle_and_direction_as_factor <- factor(frontdata$angle_and_direction_as_factor,
+    levels = c('-45','-30', '-15', '0', '15', '30', '45'),ordered = TRUE)
+
+frontdata$elevation_and_direction_as_factor <- factor(frontdata$elevation_and_direction_as_factor,
+    levels = c('-30', '-15', '0', '15', '30'),ordered = TRUE)
+```
+
+The angles denote the angle of the camera with respect to the calf, so "left" (negative values) indicate that the camera moved to the left, and so we are seeing more of the calf's left side. "Right" (positive values) indicate that the camera moved to the right, and so we are seeing more of the calf's right side.
+
+
+```{r Select/reorder columns to use}
+frontdata <- frontdata %>%
+  select(image, calf, total_time_in_seconds, angle, direction, angle_and_direction_as_factor, angle_and_direction_numeric, elevation, upwards_or_downwards, elevation_and_direction_as_factor, elevation_and_direction_numeric, stand_or_lie, age, THI, left_ear_max_clean, left_ear_average_clean, right_ear_max_clean, right_ear_average_clean, left_nostril_max, left_nostril_average, right_nostril_max, right_nostril_average, left_airway_max, left_airway_average, right_airway_max, right_airway_average, muzzle_max, muzzle_average, hair_whorl_max)
+
+```
+
+
+##1.1 **Temperature and time**
+
+```{r Histogram & subset by time}
+hist(frontdata$total_time_in_seconds, breaks=30, main = "Number of images vs. time in trial", ylim=c(0,120)) + abline(v=300, col="red")
+
+under300<- subset(frontdata, total_time_in_seconds<300)
+
+hist(under300$total_time_in_seconds, breaks=21, main = "Number of images (front) vs. time in trial", ylim=c(0,120), xlim=c(0,300), xlab = "Time (s)", ylab = "Number of images")
+
+length(frontdata$total_time_in_seconds) #817
+length(which(frontdata$total_time_in_seconds > 300)) #70
+length(which(frontdata$total_time_in_seconds < 300)) #747
+```
+The test is supposed to be 5 minutes (300 seconds) long, but a histogram shows that we have quite a few images that are timestamped past the 300s mark. 70 of the 817 images are over 300s.
+
+**Does temperature change during the 5+ minute filming period?**
+
+```{r Ugly time vs. temperature plot where all calves are together}
+#plot(frontdata$total_time_in_seconds, frontdata$hair_whorl_max, col=frontdata$calf)
+
+ggplot(data = frontdata, aes(x = total_time_in_seconds, y = hair_whorl_max, group = calf, colour=calf)) + geom_line() + ggtitle("Max hair whorl temperature over time")
+
+```
+
+These plots are pretty hard to understand, so I'm going to make some lattice plots instead where you can see each calf separately. This and the following plots are made with the full dataset, including temperatures which were taken past the 300s mark.
+
+
+```{r Lattice plots - temperatures vs. time}
+frontresponse <- names(frontdata[15:29])
+frontresponse <- set_names(frontresponse)
+#response
+lattice_plots <- function(x, y) {
+     ggplot(frontdata, aes_string(x = x, y = y)) +
+          geom_line() + facet_wrap(~calf) +
+          labs(x = x,
+               y = y) + 
+    ggtitle(paste("Temperature of", y, sep=" "))
+}
+
+front_exploratory_time_plots = map(frontresponse, ~lattice_plots(y=.x, "total_time_in_seconds") )
+
+#names(exploratory_time_plots)
+
+front_exploratory_time_plots
+```
+
+```{r Lattice plots - temperatures vs. time when time < 300s}
+
+#for some reason, using the function, I wasn't able to get ggplot to ignore NAs in the data and in the case of the ears, it's creating gaps so I will subset the data and create the ear lattice plots separately
+
+leftearmaxnoNA<- under300[!is.na(under300$left_ear_max_clean),]
+
+p1<- ggplot((under300[!is.na(under300$left_ear_max_clean),]),
+       aes_string(x = leftearmaxnoNA$total_time_in_seconds, y = leftearmaxnoNA$left_ear_max_clean)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of left ear") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+rightearmaxnoNA<- under300[!is.na(under300$right_ear_max_clean),]
+rightearmaxnoNA<- rbind(rightearmaxnoNA, under300[under300$calf==2118,])
+rightearmaxnoNA<- rightearmaxnoNA[order(rightearmaxnoNA$calf),]
+
+p2<- ggplot(rightearmaxnoNA,
+       aes_string(x = rightearmaxnoNA$total_time_in_seconds, y = rightearmaxnoNA$right_ear_max_clean)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of right ear") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+leftearaveragenoNA<- under300[!is.na(under300$left_ear_average_clean),]
+
+p3<- ggplot(leftearaveragenoNA,
+       aes_string(x = leftearaveragenoNA$total_time_in_seconds, y = leftearaveragenoNA$left_ear_average_clean)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of left ear") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+rightearaveragenoNA<- under300[!is.na(under300$right_ear_average_clean),]
+rightearaveragenoNA<- rbind(rightearaveragenoNA, under300[under300$calf==2118,])
+rightearaveragenoNA<- rightearaveragenoNA[order(rightearaveragenoNA$calf),]
+
+
+p4<- ggplot(rightearaveragenoNA,
+       aes_string(x = rightearaveragenoNA$total_time_in_seconds, y = rightearaveragenoNA$right_ear_average_clean)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of right ear") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p5<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$left_nostril_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of left nostril") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p6<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$left_nostril_average)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of left nostril") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p7<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$right_nostril_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of right nostril") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p8<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$right_nostril_average)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of right nostril") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p9<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$left_airway_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of left airway") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p10<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$right_airway_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of right airway") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p11<-ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$left_airway_average)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of left airway") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p12<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$right_airway_average)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of right airway") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p13<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$muzzle_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of muzzle") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p14<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$muzzle_average)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of muzzle") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))
+
+p15<- ggplot(under300,
+       aes_string(x = under300$total_time_in_seconds, y = under300$hair_whorl_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of hair whorl") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+
+p1 + geom_point(size = 0.1)
+p2 + geom_point(size = 0.1)
+p3 + geom_point(size = 0.1)
+p4 + geom_point(size = 0.1)
+p5 + geom_point(size = 0.1)
+p6 + geom_point(size = 0.1)
+p7 + geom_point(size = 0.1)
+p8 + geom_point(size = 0.1)
+p9 + geom_point(size = 0.1)
+p10 + geom_point(size = 0.1)
+p11 + geom_point(size = 0.1)
+p12 + geom_point(size = 0.1)
+p13 + geom_point(size = 0.1)
+p14 + geom_point(size = 0.1)
+p15 + geom_point(size = 0.1)
+
+```
+
+It seems that in general, individuals' temperatures are not changing much across time. There are some temperature dips that seem weird, but I've checked the images and the temperatures were all coded correctly.
+
+```{THIS IS A TEST JUST FOR FUN}
+for(i in 12:26){ 
+  cow<-glm(frontdata[,i]~ (1|calf) + angle + direction + elevation + total_time_in_seconds, data=frontdata)
+}
+
+
+ambient_temp<-glm(frontdata[,i]~ (1|calf) + angle + direction + elevation + total_time_in_seconds + , data=frontdata)
+
+```
+
+
+##1.2 **Angles**
+
+Note that some variables relating to angles have been cleaned in a previous section.
+
+How many images do we have of the calves from each angle? First, taken from the left or right:
+
+```{r Histogram - front images by angle}
+ggplot(frontdata, aes(x=angle_and_direction_as_factor)) + geom_bar() + ggtitle("No. of front images with calves showing more of the left (-) or right (+) side of their faces")+ theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Angle",
+       y = "Number of images") + scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L", "-15" = "15ºL", "0" = "Centered", "15" = "15º R", "30" = "30º R", "45" = "45º R"))  +
+  theme(axis.text=element_text(size=12),
+        axis.title=element_text(size=16))  
+
+length(frontdata$elevation_and_direction_as_factor) #817
+length(which(frontdata$angle_and_direction_as_factor > 0)) #361
+length(which(frontdata$angle_and_direction_as_factor < 0)) #244
+length(which(frontdata$angle_and_direction_as_factor == 0)) #212
+```
+
+So we have 817 images of the front of the face, of which 212 were taken centered. Interestingly, there are also more pictures taken fron the calves' right sides (361 images) than the left (244 images).
+
+Does temperature change depending on the angle?
+
+For the following plots, the upper whisker extends from the hinge to the highest value that is within 1.5 x IQR of the hinge, where IQR is the inter-quartile range, or distance between the first and third quartiles. The lower whisker extends from the hinge to the lowest value within 1.5 x IQR of the hinge. Data beyond the end of the whiskers are outliers and plotted as points (as specified by Tukey).
+
+```{r Front temperatures vs. angle (first 300s)}
+front_angle_boxplots = function(x, y) {
+    ggplot(under300, aes_string(x = x, y=y)) +
+    geom_boxplot() + 
+    labs(x = "Angle of camera to the left (-) or right(+) of calf", y = y) + 
+    ggtitle(y)
+}
+
+front_exploratory_angle_plots = map(response, ~front_angle_boxplots(y=.x, x= "angle_and_direction_as_factor"))
+
+#names(front_exploratory_angle_plots)
+
+front_exploratory_angle_plots
+```
+
+```{r Boxplots front angle}
+#In the previous chunk, the plots were made with a custon function, but here they are one by one:
+
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$left_ear_max_clean)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L",
+                            "-15" = "15ºL", "0" = "Centered", "15" = "15º R",
+                            "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of left ear")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$left_ear_average_clean)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L",
+                            "-15" = "15ºL", "0" = "Centered", "15" = "15º R",
+                            "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of left ear")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$right_ear_max_clean)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L",
+                            "-15" = "15ºL", "0" = "Centered", "15" = "15º R",
+                            "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of right ear")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$right_ear_average_clean)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L",
+                            "-15" = "15ºL", "0" = "Centered", "15" = "15º R",
+                            "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of right ear")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$left_nostril_max)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L",
+                            "-15" = "15ºL", "0" = "Centered", "15" = "15º R",
+                            "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of left nostril")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$left_nostril_average)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L",
+                            "-15" = "15ºL", "0" = "Centered", "15" = "15º R",
+                            "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of left nostril")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$right_nostril_max)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L", "-15" = "15ºL", "0" = "Centered", "15" = "15º R", "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of right nostril")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$right_nostril_average)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L", "-15" = "15ºL", "0" = "Centered", "15" = "15º R", "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of right nostril")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$left_airway_max)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L", "-15" = "15ºL", "0" = "Centered", "15" = "15º R", "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of left airway")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$left_airway_average)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L", "-15" = "15ºL", "0" = "Centered", "15" = "15º R", "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of left airway")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$right_airway_max)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L", "-15" = "15ºL", "0" = "Centered", "15" = "15º R",  "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of right airway")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$right_airway_average)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L","-15" = "15ºL", "0" = "Centered", "15" = "15º R","30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of right airway")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$muzzle_max)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L","-15" = "15ºL", "0" = "Centered", "15" = "15º R", "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of muzzle")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$muzzle_average)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L","-15" = "15ºL", "0" = "Centered", "15" = "15º R","30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of muzzle")
+
+ggplot(under300, aes_string(x = under300$angle_and_direction_as_factor, y=under300$hair_whorl_max)) +
+  geom_boxplot() + 
+  labs(x = "Angle")  +
+  scale_x_discrete(labels=c("-45" = "45º L", "-30" = "30º L", "-15" = "15ºL", "0" = "Centered", "15" = "15º R", "30" = "30º R", "45" = "45º R"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of hair whorl")
+
+```
+
+So there are some slight changes in some temperatures depending on the angle, but in general angle seems not to matter much
+
+Now, of the calves looking down or up. How many do we have from each angle (here called "elevation" to avoid confusion with the sideways angles)?
+
+```{r Barplot - number of images by camera elevation}
+ggplot(frontdata, aes(x=elevation_and_direction_as_factor)) + geom_bar() + ggtitle("Number of frontal images, \n calves seen from above (A) or below (B)") + theme(plot.title = element_text(hjust = 0.5)) + scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B")) + labs(x= "Elevation", y = "Number of images")
+```
+
+Most of the images were taken from above the calf (so we are looking down at the calf, negative values in the dataset) versus looking at it head-on (values of zero) or looking up at it/ up its snout (positive values).
+
+```{r Temperature and elevation of camera}
+front_angle_boxplots = function(x, y) {
+     ggplot(frontdata, aes_string(x = x, y=y)) +
+    geom_boxplot() + 
+    labs(x = "Elevation of the camera, looking down(-) or up (+) at the calf", y = y) + 
+    ggtitle(y)
+}
+
+front_exploratory_elevation_plots = map(response, ~front_angle_boxplots(y=.x, x= "elevation_and_direction_as_factor") )
+
+#names(exploratory_angle_plots)
+
+front_exploratory_elevation_plots
+
+```
+
+```{r Boxplots - elevation part 2 (images taken under 300s mark)}
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$left_ear_max_clean)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of left ear")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$left_ear_average_clean)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of left ear")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$right_ear_max_clean)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of right ear")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$right_ear_average_clean)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of right ear")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$left_nostril_max)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of left nostril")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$left_nostril_average)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of left nostril")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$right_nostril_max)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of right nostril")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$right_nostril_average)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of right nostril")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$left_airway_max)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of left airway")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$left_airway_average)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of left airway")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$right_airway_max)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of right airway")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$right_airway_average)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of right airway")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$muzzle_max)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of muzzle")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$muzzle_average)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Average temperature of muzzle")
+
+ggplot(under300, aes_string(x = under300$elevation_and_direction_as_factor, y=under300$hair_whorl_max)) +
+  geom_boxplot() + 
+  labs(x = "Elevation")  +
+  scale_x_discrete(labels=c("-30" = "30º A", "-15" = "15ºA", "0" = "Front", "15" = "15º B", "30" = "30º B", "45" = "45º B"))  +
+  labs(y = "Temperature (ºC)") + 
+  ggtitle("Maximum temperature of hair whorl")
+
+```
+
+
+##1.3 *Relation between different ROIs*
+
+```{r Giant lattice plot code}
+#You can ignore this if you want! But beware: This entire piece of code is just a very long workaround so that when we make the lattice plot later on, the axis labels are legible. Taken from https://bl.ocks.org/timelyportfolio/1873a7b59a77f51c4a78
+
+library(lattice)
+library(grid)
+
+#this setting controls whether it will show up or not
+#default is panel = "on", strip = "on"
+trellis.par.set("clip",list(panel="off",strip="off"))
+
+#almost exact copy of diag.panel.splom from lattice package
+#https://r-forge.r-project.org/scm/viewvc.php/pkg/R/splom.R?view=markup&root=lattice
+#but uses outside=T for axis
+diag.panel.splom2 <-
+  function(x = NULL,
+           varname = NULL, limits, at = NULL, labels = NULL,
+           draw = TRUE, tick.number = 5,
+           
+           varname.col = add.text$col,
+           varname.cex = add.text$cex,
+           varname.lineheight = add.text$lineheight,
+           varname.font = add.text$font,
+           varname.fontfamily = add.text$fontfamily,
+           varname.fontface = add.text$fontface,
+           
+           axis.text.col = axis.text$col,
+           axis.text.alpha = axis.text$alpha,
+           axis.text.cex = axis.text$cex,
+           axis.text.font = axis.text$font,
+           axis.text.fontfamily = axis.text$fontfamily,
+           axis.text.fontface = axis.text$fontface,
+           axis.text.lineheight = axis.text$lineheight,
+           
+           axis.line.col = axis.line$col,
+           axis.line.alpha = axis.line$alpha,
+           axis.line.lty = axis.line$lty,
+           axis.line.lwd = axis.line$lwd,
+           axis.line.tck = 1,
+           ...)
+  {
+    add.text <- trellis.par.get("add.text")
+    axis.line <- trellis.par.get("axis.line")
+    axis.text <- trellis.par.get("axis.text")
+    if (!is.null(varname))
+      
+      grid.text(varname,
+                name = trellis.grobname("diag.text", type="panel"),
+                gp =
+                  gpar(col = varname.col,
+                       cex = varname.cex,
+                       lineheight = varname.lineheight,
+                       fontface = lattice:::chooseFace(varname.fontface, varname.font),
+                       fontfamily = varname.fontfamily))
+    if (draw) ## plot axes
+    {
+      rot <- if (is.numeric(limits)) 0 else c(90, 0)
+      axis.details <-
+        lattice:::formattedTicksAndLabels.default(limits,
+                                                  at = if (is.null(at)) TRUE else at,
+                                                  labels = if (is.null(labels)) TRUE else labels,
+                                                  logsc = FALSE,
+                                                  ..., n = tick.number)
+      for (side in c("left", "bottom")) #,top", "right", "bottom"))
+        panel.axis(side = side,
+                   at = axis.details$at,
+                   labels = axis.details$labels,
+                   check.overlap = axis.details$check.overlap,
+                   ticks = TRUE,
+                   half = F,
+                   outside = T,
+                   
+                   tck = axis.line.tck,
+                   rot = rot, 
+                   
+                   text.col = axis.text.col,
+                   text.alpha = axis.text.alpha,
+                   text.cex = axis.text.cex,
+                   text.font = axis.text.font,
+                   text.fontfamily = axis.text.fontfamily,
+                   text.fontface = axis.text.fontface,
+                   text.lineheight = axis.text.lineheight,
+                   
+                   line.col = axis.line.col,
+                   line.alpha = axis.line.alpha,
+                   line.lty = axis.line.lty,
+                   line.lwd = axis.line.lwd)
+    }
+  }
+```
+
+
+```{r Average and center data per individual}
+
+#Make some new columns
+all_data_front<- cbind(frontdata, frontdata[15:29], frontdata[15:29])
+
+#rename columns
+for(i in 30:44){ 
+  names(all_data_front)[i] <- paste(names(all_data_front)[i], "mean", sep="_")
+}
+
+for(i in 45:59){ 
+  names(all_data_front)[i] <- paste(names(all_data_front)[i], "centered", sep="_")
+}
+
+#Make columns 28:42 the mean temperatures, by calf
+all_data_front<- all_data_front %>%
+  group_by(calf) %>%
+  mutate_at(vars(30:44), .funs= mean, na.rm=T) %>%
+  ungroup()
+
+#make columns 43:57 the centered temperatures, by calf
+for (i in 45:59){
+  all_data_front[i] = all_data_front[i-15] - all_data_front[i]
+}
+
+#all_data_front
+
+#subset the data-- I don't want the max temperatures of the ROIs, only the average temps (except in the case of the whorl temperature, which has only the max and no average, so we will use the max for whorl)
+
+frontdata_means <- all_data_front %>%
+  dplyr::select(contains("_mean")) %>%
+  dplyr::select(matches("average|whorl")) %>%
+  distinct()
+
+#rename columns to make them somewhat legible in the lattice plot (lazily done)
+names(frontdata_means) <- substr(names(frontdata_means), 1, 10)
+
+#frontdata_means
+
+frontdata_centered <- all_data_front %>%
+  dplyr::select(contains("_centered")) %>%
+  dplyr::select(matches("average|whorl"))
+
+#rename columns make them somewhat legible in the lattice plot
+names(frontdata_centered) <- substr(names(frontdata_centered), 1, 10)
+```
+
+```{r}
+## Again, this is a really long workaround just to make the axis labels legible, you can skip this and run the next chunk instead, but in that case the variable names won't be legible at all.
+splom(frontdata_means
+  , panel = function(x,y,i,j,...){
+    #if in column 1 or row 1 make an axis
+    if (i == 1 ) {#|| (i == 2 && j == 1) ) {
+      panel.axis(
+        side = "bottom"
+        ,at = pretty(x)
+        ,check.overlap=T
+        ,half=F
+        ,outside=T
+      )
+    }
+    
+    if (j == 1) {
+      panel.axis(
+        side = "left"
+        ,at=pretty(y)
+        ,check.overlap=T
+        ,half=F
+        ,outside=T
+      )
+    }
+    panel.xyplot(x,y,...)
+    #print(as.list(match.call()))
+  }
+  , diag.panel = function(varname,draw,...){
+    #do draw = F since already drawing axis on outer edges
+    #of superpanel
+    #more manual than I would like but we only want x
+    #in first diag panel
+    if(varname=="left_ear_a") draw = T else draw = F
+    diag.panel.splom2(varname,draw =draw,...)
+    #print(as.list(match.call()))
+    #print(varname)
+  }
+  ,xlab=" ", varname.cex = .6, main= "Between-indiv. association between ROIs (data averaged per indiv.)"
+)
+
+splom(frontdata_means, main= "Between-indiv. association between ROIs (data averaged per indiv.)", varname.cex = .6)
+
+names(frontdata_means)
+```
+
+```{r}
+#alternative at the bottom
+
+splom(frontdata_centered
+  , panel = function(x,y,i,j,...){
+    #if in column 1 or row 1 make an axis
+    if (i == 1 ) {#|| (i == 2 && j == 1) ) {
+      panel.axis(
+        side = "bottom"
+        ,at = pretty(x)
+        ,check.overlap=T
+        ,half=F
+        ,outside=T
+      )
+    }
+    
+    if (j == 1) {
+      panel.axis(
+        side = "left"
+        ,at=pretty(y)
+        ,check.overlap=T
+        ,half=F
+        ,outside=T
+      )
+    }
+    panel.xyplot(x,y,...)
+    #print(as.list(match.call()))
+  }
+  , diag.panel = function(varname,draw,...){
+    #do draw = F since already drawing axis on outer edges
+    #of superpanel
+    #more manual than I would like but we only want x
+    #in first diag panel so 
+    #in case of iris set varname == "Sepal.Length"
+    if(varname=="left_ear_a") draw = T else draw = F
+    diag.panel.splom2(varname,draw =draw,...)
+    #print(as.list(match.call()))
+    #print(varname)
+  }
+  ,xlab=" ", varname.cex = .6, main= "Within-indiv. association between ROIs (data centered by indiv.)"
+)
+
+#alternative with somwhat illegible axis labels:
+
+splom(frontdata_centered, main= "Within-indiv. association between ROIs (data centered by indiv.)", varname.cex = .5)
+
+names(frontdata_centered)
+
+```
+
+
+#1.4 *Relationship between temperature and number of images taken*
+Could we use the number of images taken per calf as a proxy for its reaction towards an experimenter? We will subset the data to use only images taken at times <300s, since only some calves were filmed for >300s.
+
+```{r Subset data & count images}
+under300<- frontdata%>%
+  subset(., total_time_in_seconds<300)
+
+#names(under300)
+#under300
+
+n_front <-under300 %>%
+  dplyr::select(calf, angle_and_direction_numeric, elevation_and_direction_numeric, 15:29) %>% 
+  group_by(calf) %>%
+  add_tally() %>%
+  summarise_all(funs(mean(., na.rm=T))) %>%
+  ungroup()
+
+names(n_front)
+#n_front
+```
+
+```{r Plot number of images & temperature}
+for(i in 4:18){
+  plot(n_front$n, n_front[[i]], xlab="Number of front images per individual", ylab=names(n_front[i]), main="No. images vs. mean ROI temp per calf (in 5 min)")
+}
+
+plot(n_front$n, (n_front$angle_and_direction_numeric), sub = "values below 0 correspond to showing the left side, above 0 the right side", ylab= "Avg. degrees calf faced to the left(-) or right (+) ", main= "No. images vs angle of camera w/respect to head (in 5 minutes)")
+#So in positive values (+) the calf is showing more of the right side of its face.
+
+for(i in 4:18){
+  plot(n_front$angle_and_direction_numeric, n_front[[i]], xlab="Average angle of camera", ylab=names(n_front[i]), main="Mean angle of camera vs. mean ROI temp per calf (in 5 min)")
+}
+
+#To identify an individual calf on any of these plots, use the identify() function which is hashed in the last line of this code chunk (run the code, click on all the points to be identified, then press the esc key. The name of each calf will be printed). I think this doesn't work in Rmarkdown (?), but if you run the code for the plot + identify() in the R/RStudio console directly, it works fine.
+
+#identify(x= n_front$n, y= n_front$right_ear_average_clean, labels=n_front$calf)
+
+```
+
+
+
+##1.5 **Distribution of temperatures**
+
+```{r Temperature distributions - histograms}
+for(i in 15:29){
+  hist(frontdata[[i]], breaks=20, main=paste(names(frontdata[i])))
+}
+```
+
+```{r Temperatures vs THI}
+
+for (i in 15:29){
+    plot(x=frontdata$THI, y=frontdata[[i]], main=paste(names(frontdata[i])), xlab = paste(names(frontdata[i])))
+}
+
+```
+It seems pretty clear that temperature of all ROIs increases with THI, which probably helps to account for the bimodal distribution of temperatures.
+
+# 1.6 **Ear asymmetry**
+
+```{r Add new columns with ear asymmetry}
+#Add new columns
+frontdata_asym <- frontdata %>%
+  mutate(ear_max_asymmetry = left_ear_max_clean - right_ear_max_clean, ear_average_asymmetry = left_ear_average_clean - right_ear_average_clean)
+
+#Make an object storing the asymmetries to make plotting faster
+names(frontdata_asym)
+asymresponse <- names(frontdata_asym[30:31])
+asymresponse <- set_names(asymresponse)
+
+#function to make plotting faster
+front_angle_boxplots = function(x, y) {
+    ggplot(frontdata_asym, aes_string(x = x, y=y)) +
+    geom_boxplot() + 
+    labs(x = "Angle of camera to the left (-) or right(+) of calf", y = y) + 
+    ggtitle(y)
+}
+
+#make plots
+front_exploratory_angle_plots = map(asymresponse, ~front_angle_boxplots(y=.x, x= "angle_and_direction_as_factor"))
+
+#show plots
+front_exploratory_angle_plots
+```
+
+Asymmetries seem to become larger when the camera is to the right, but this seems quite slight.
+
+##2 **Back data**
+
+```{r Read back data into R}
+backdata=read.csv("~/Desktop/data-back.csv") # read the data into R
+backdata<-data.frame(backdata)
+#head(backdata)
+names(backdata)
+#summary(backdata)
+backdata$calf<- as.factor(backdata$calf)
+
+backdata<-tbl_df(backdata)
+backdata <- backdata %>%
+  select(-Filename)
+```
+
+*Does temperature of the ears as seen from behind change across the 5 minute test?*
+
+```{r Fix up the angles}
+
+#making angles into numeric variables
+
+backdata<- backdata %>%
+  mutate(angle_and_direction_numeric = case_when(angle_and_direction=="L60"~"-60", angle_and_direction=="L45"~"-45", angle_and_direction=="L30"~"-30", angle_and_direction=="L15"~"-15", angle_and_direction=="C0"~"0", angle_and_direction=="R15"~"15", angle_and_direction=="R30"~"30", angle_and_direction=="R45"~"45", angle_and_direction=="R60"~"60"))
+
+backdata<- backdata %>%
+  mutate (elevation_and_direction_numeric = case_when(elevation_and_direction=="30D"~"-30", elevation_and_direction=="15D"~"-15", elevation_and_direction=="0C"~"0", elevation_and_direction=="15U"~"15", elevation_and_direction=="30U"~"30"))
+
+#and into factors, for making boxplots
+
+backdata$angle_and_direction_as_factor <- factor(backdata$angle_and_direction_numeric,
+    levels = c('-60', '-45','-30', '-15', '0', '15', '30', '45', '60'),ordered = TRUE)
+
+backdata$elevation_and_direction_as_factor <- factor(backdata$elevation_and_direction_numeric,
+    levels = c('-30', '-15', '0', '15', '30'),ordered = TRUE)
+
+backdata <- backdata %>%
+  select(image, calf, total_time_in_seconds, angle, direction, angle_and_direction_as_factor, angle_and_direction_numeric, elevation, upwards_or_downwards, elevation_and_direction_as_factor, elevation_and_direction_numeric, stand_or_lie, age, THI, left_ear_max, left_ear_average, right_ear_max, right_ear_average)
+
+names(backdata)
+```
+The angles denote the angle of the camera with respect to the calf, so "left" (negative values) indicate that the camera moved to the left, and so we are seeing more of the calf's left side. "Right" (positive values) indicate that the camera moved to the right, and so we are seeing more of the calf's right side.
+
+#2.1 **Temperature and time**
+
+```{r Back - Number of images & time}
+hist(backdata$total_time_in_seconds, breaks=30, main = "Number of images vs. time in trial")
+under300_back<- subset(backdata, total_time_in_seconds<300)
+length(backdata$total_time_in_seconds) #447
+length(which(backdata$total_time_in_seconds > 300)) #100
+length(which(backdata$total_time_in_seconds < 300)) #347
+```
+The test is supposed to be 5 minutes (300 seconds) long, but a histogram shows that we have quite a few images that are timestamped past the 300s mark. 100 of the 447 images, ~22%, are over 300s.
+
+
+```{r An unreadable plot}
+ggplot(data = backdata, aes(x = total_time_in_seconds, y = right_ear_average, group = calf, colour=calf)) + geom_line()
+```
+Again, this looks horrible, so let's split it up by individual.
+
+```{r Back temperature vs time}
+backresponse<- names(backdata[15:18])
+backresponse = set_names(backresponse)
+#backresponse
+
+lattice_plots = function(x, y) {
+     ggplot(backdata, aes_string(x = x, y = y)) +
+          geom_line() + facet_wrap(~calf) +
+          labs(x = x,
+               y = y) + 
+    ggtitle(paste("Back data",y, sep=" "))
+}
+
+back_exploratory_time_plots = map(backresponse, ~lattice_plots(y=.x, "total_time_in_seconds") )
+
+#names(exploratory_time_plots)
+
+back_exploratory_time_plots
+
+```
+
+Some of the temperatures look very suspicious here, but they are all correctly taken from the images. It's not human error then, there is something else going on. Most likely it's the angles.
+
+#2.2 **Angles**
+
+```{r Back - Barplot of images per angle}
+ggplot(backdata, aes(x=angle_and_direction_as_factor)) + geom_bar() + ggtitle("Number of back images, calves showing more of their left(-) or right (+) side") + theme(plot.title = element_text(hjust = 0.5))
+```
+Again, in most of the images, the calves are exposing the right side of their face to the camera.
+
+
+```{r Back temperature and angle boxplots}
+#names(backdata)
+
+angle_boxplots = function(x, y) {
+     ggplot(backdata, aes_string(x = x, y=y)) +
+    geom_boxplot() + 
+    labs(x = x, y = y) + 
+    ggtitle(paste("Back data", y, sep=" "))
+}
+
+back_exploratory_angle_plots = map(backresponse, ~angle_boxplots(y=.x, "angle_and_direction_as_factor") )
+
+#names(exploratory_angle_plots)
+
+back_exploratory_angle_plots
+
+```
+
+There is huge variability in the temperatures at all angles of measurement. Probably this is because the calves moved their ears a lot; they can move them forwards and backwards, and also spin/rotate them. I think this is probably what led to the big variation in temperatures. Regardless, it seems that ear temperatures measured from behind the calf are simply not very reliable.
+
+```{r Back temperature vs angle}
+ggplot(backdata, aes(x=elevation_and_direction_as_factor)) + geom_bar() + ggtitle("Number of back images, taken from below (-) or above (+)") + theme(plot.title = element_text(hjust = 0.5))
+
+back_exploratory_elevation_plots = map(backresponse, ~angle_boxplots(y=.x, x= "elevation_and_direction_as_factor") )
+
+back_exploratory_elevation_plots
+
+```
+
+As in the case of the angle of the camera, the elevation of the camera (or "vertical angle") doesn't seem to impact the measured ear temperatures in any systematic way. Rather, there is a lot of variation at all camera elevations.
+
+##3 **Side data**
+
+```{r Read data into R}
+sidedata=read.csv("~/Desktop/data-side.csv")
+sidedata=read.csv(file.choose())
+
+sidedata<-data.frame(sidedata)
+#head(sidedata)
+#names(sidedata)
+#summary(sidedata)
+sidedata$calf<- as.factor(sidedata$calf)
+
+sidedata<-tbl_df(sidedata)
+#head(sidedata)
+```
+
+
+
+#3.1 Side angles
+
+```{r Fix angle variables}
+names(sidedata)
+#sidedata
+#table(sidedata$angle_and_direction)
+
+sidedata<- sidedata %>%
+  mutate(angle_and_direction_numeric = case_when(angle_and_direction=="30B"~"-30", angle_and_direction=="15B"~"-15", angle_and_direction=="0C"~"0", angle_and_direction=="15F"~"15", angle_and_direction=="30F"~"30", angle_and_direction=="45F"~"45", angle_and_direction=="60F"~"60"))
+
+sidedata$angle_and_direction_as_factor <- factor(sidedata$angle_and_direction_numeric,
+    levels = c('-30', '-15', '0', '15', '30', '45', '60'),ordered = TRUE)
+
+sidedata$angle_and_direction_numeric <- as.numeric(sidedata$angle_and_direction_numeric)
+
+ggplot(sidedata, aes(x=angle_and_direction_as_factor)) + geom_bar() + ggtitle("Number of side images, from the back (-) to the front (+)") + theme(plot.title = element_text(hjust = 0.5))
+
+sidedata<- sidedata %>%
+  select(image, calf, total_time_in_seconds, angle, direction, angle_and_direction_as_factor, angle_and_direction_numeric, stand_or_lie, age, THI, side, eyeball_average, inner_corner_eye_max, rostral_eye_surrounding_max, caudal_eye_surrounding_max)
+```
+
+Note that we didn't record the elevation of the camera for the side images, only the sideways (left/right) angle.
+
+#3.2 Left side data
+
+```{r Subset left side data, plot temp over time}
+leftdata <- subset(sidedata, side=="L")
+names(leftdata)
+
+leftdata<-tbl_df(leftdata)
+
+leftresponse<- names(leftdata[12:15])
+leftresponse = set_names(leftresponse)
+
+left_lattice_plots = function(x, y) {
+     ggplot(leftdata, aes_string(x = x, y = y)) +
+          geom_line() + facet_wrap(~calf) +
+          labs(x = x,
+               y = y) + 
+    ggtitle(paste("Left",y, sep=" "))
+}
+
+left_exploratory_time_plots = map(leftresponse, ~left_lattice_plots (y=.x , x= "total_time_in_seconds"))
+
+#names(left_exploratory_time_plots)
+
+left_exploratory_time_plots
+```
+
+```{r Same plots but one by one - under 300s}
+
+
+sideunder300<- subset(sidedata, total_time_in_seconds<300)
+leftdata300 <- subset(sideunder300, side=="L")
+
+
+ggplot(leftdata300,
+       aes_string(x = leftdata300$total_time_in_seconds, y = leftdata300$eyeball_average)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of left eyeball") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+
+ggplot(leftdata300,
+       aes_string(x = leftdata300$total_time_in_seconds, y = leftdata300$inner_corner_eye_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of inner corner of left eye") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+
+ggplot(leftdata300,
+       aes_string(x = leftdata300$total_time_in_seconds, y = leftdata300$rostral_eye_surrounding_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of rostral eye surrounding area") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+
+ggplot(leftdata300,
+       aes_string(x = leftdata300$total_time_in_seconds, y = leftdata300$caudal_eye_surrounding_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of caudal eye surrounding area") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+```
+
+
+In the side data angles, negative numbers denote the degrees that the calf was turned away from the camera, positive number denote the degrees that the calf turned towards the camera (so the higher the number, the closer to "head-on" the camera was positioned). Zero values denote images where the camera was perfectly perpendicular to the calf's head. So for instance, if the camera is on the calf's left side, and the calf then turns to its right, it has turned "away" from the camera and any resulting images will have negative angle values. If the camera is on the calf's right and the calf turns towards its own right, it has turned "towards" the camera and resulting images will have positive values. I hope that's clear.
+
+```{r Left side - histogram distribution of temperatures}
+for(i in 12:15){
+  hist(leftdata[[i]], breaks=20, main=paste("Left", names(leftdata[i]), sep=" "))
+}
+```
+
+
+
+
+# 3.3 Right side
+```{r Subset right side data}
+rightdata <- subset(sidedata, side=="R")
+names(rightdata)
+
+rightdata<-tbl_df(rightdata)
+
+rightresponse<- names(rightdata[12:15])
+rightresponse = set_names(rightresponse)
+
+right_lattice_plots = function(x, y) {
+     ggplot(rightdata, aes_string(x = x, y = y)) +
+          geom_line() + facet_wrap(~calf) +
+          labs(x = x,
+               y = y) + 
+    ggtitle(paste("Right",y, sep=" "))
+}
+
+right_exploratory_time_plots = map(rightresponse, ~right_lattice_plots (y=.x , x= "total_time_in_seconds"))
+
+#names(right_exploratory_time_plots)
+
+right_exploratory_time_plots
+```
+
+```{r lattice plots under 300s}
+
+
+sideunder300<- subset(sidedata, total_time_in_seconds<300)
+rightdata300 <- subset(sideunder300, side=="R")
+
+
+ggplot(rightdata300,
+       aes_string(x = rightdata300$total_time_in_seconds, y = rightdata300$eyeball_average)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Average temperature of right eyeball") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+
+ggplot(rightdata300,
+       aes_string(x = rightdata300$total_time_in_seconds, y = rightdata300$inner_corner_eye_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of inner corner of right eye") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+
+ggplot(rightdata300,
+       aes_string(x = rightdata300$total_time_in_seconds, y = rightdata300$rostral_eye_surrounding_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of rostral eye surrounding area") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+
+ggplot(rightdata300,
+       aes_string(x = rightdata300$total_time_in_seconds, y = rightdata300$caudal_eye_surrounding_max)) +
+  geom_line(na.rm=T) + facet_wrap(~calf) +
+  ggtitle("Maximum temperature of caudal eye surrounding area") +
+  labs(x = "Time (s)",
+       y = "Temperature (ºC)") +
+  theme(axis.text=element_text(size=7.5),
+        axis.title=element_text(size=12))  + 
+  geom_point(size = 0.1)
+```
+
+
+```{r Right side - histogram distribution of temperatures}
+for(i in 12:15){
+  hist(rightdata[[i]], breaks=20, main=paste("Right", names(rightdata[i]), sep=" "))
+}
+```
+It looks very similar to the left side data.
+
+```{r Between- and within-individual correlations between ROIs}
+
+#names(rightdata)
+all_data_right<- cbind(rightdata, rightdata[12:15], rightdata[12:15]) #replicate columns 12:15 and add them on at the end
+names(all_data_right)
+
+#rename columns
+for(i in 16:19){ 
+  names(all_data_right)[i] <- paste(names(all_data_right)[i], "mean", sep="_")
+}
+
+for(i in 20:23){ 
+  names(all_data_right)[i] <- paste(names(all_data_right)[i], "centered", sep="_")
+}
+
+#Make columns 16:19 the mean temperatures, by calf
+all_data_right<- all_data_right %>%
+  group_by(calf) %>%
+  mutate_at(vars(16:19), .funs= mean, na.rm=T) %>%
+  ungroup()
+
+#make columns 20:23 the centered temperatures, by calf
+for (i in 20:23){
+  all_data_right[i] = all_data_right[i-4] - all_data_right[i]
+}
+
+#rename columns to make them somewhat legible in the lattice plot (very lazily done, mind you, by truncating them to 10 characters)
+names(all_data_right) <- substr(names(all_data_right), 1, 10)
+
+splom(all_data_right[16:19], main= "Between-indiv. association between ROIs (data averaged per indiv.)", varname.cex = .6)
+
+splom(all_data_right[20:23], main= "Within-indiv. association between ROIs (data centered per indiv.)", varname.cex = .6)
+
+print(names(rightdata[12:15]))
+```
+Again, quick disclaimer: the splom() function does not make it easy to get legible axis labels, so I printed a list so they can be read separately (they start at the bottom-left corner of the scatter plot matrix and go up & to right). Sorry.
+
+Much like in the case of the front data, there appears to be stronger relationships between ROIs at the between-individual level than there are at the within-individual level. So warmer calves tend to be warmer everywhere, but at the individual level, the temperature of different ROIs can vary relatively independently. 
+
+
+```{r Number of images & temperature}
+rightunder300<- subset(rightdata, total_time_in_seconds<300)
+
+names(rightunder300)
+
+
+t <-rightunder300 %>%
+  dplyr::select(calf, angle_and_direction_numeric, 12:15) %>% 
+  group_by(calf) %>%
+    add_tally() %>%
+  summarise_all(funs(mean))
+
+
+names(t)
+
+for(i in 3:6){
+  plot(t$n, t[[i]], xlab="Number of side images per individual", ylab=names(t[i]), main="No. of images vs. right-side ROI temp, 5 min of filming")
+}
+```
+
+There looks to be a mild, positive correlation between the number of images and temperature of each of the ROIs.
+
+```{r}
+cor.test(t$n, t$caudal_eye_surrounding_max, method = "pearson")
+```
+
+
+#3.4 Do some calves look more to one side?
+
+```{r}
+library(reshape2)
+
+sidecount<- sidedata %>%
+  count(calf, side)
+
+sidecount<- dcast(sidecount, calf ~side )
+
+sidecount$total = sidecount$L + sidecount$R
+sidecount$Lproportion = sidecount$L * 100 / sidecount$total
+sidecount$Rproportion = sidecount$R * 100 / sidecount$total
+
+sidecount
+
+sidecountL <- sidecount[order(sidecount$Lproportion, decreasing = T),]
+
+barplot(sidecountL$Lproportion, sidecountL$calf, names.arg = sidecountL$calf, ylim = c(0, 100), main = "Proportion of side images taken from the left side, by calf", xlab = "Calf", ylab = "Proportion of side images from L", las = 2) + abline(h=50, col="red")
+
+
+
+```
+
+```{r Database of all images}
+
+alldatafront <- frontdata %>%
+  select(image, calf, angle, direction, angle_and_direction_as_factor)
+
+alldataside <- sidedata %>%
+  mutate(direction = side) %>%
+  select(image, calf, angle, direction, angle_and_direction_as_factor)
+  
+  
+alldatafrontside <- rbind(alldatafront, alldataside)
+
+#now to get the counts 
+
+alldatacount<- alldatafrontside %>%
+  count(calf, direction)
+
+alldatacount<- dcast(alldatacount, calf ~direction )
+
+alldatacount$total = alldatacount$L + alldatacount$R
+alldatacount$Lproportion = alldatacount$L * 100 / alldatacount$total
+alldatacount$Rproportion = alldatacount$R * 100 / alldatacount$total
+
+alldatacount <- alldatacount[order(alldatacount$Lproportion, decreasing = T),]
+
+barplot(alldatacount$Lproportion, as.numeric(alldatacount$calf), names.arg = alldatacount$calf, ylim = c(0, 100), main = "Proportion of front and side images taken from the left side, by calf", xlab = "Calf", ylab = "Proportion of images from L", las = 2) + abline(h=50, col="red") #the as.numeric is bc for some reason it thinks it's sg else
+
+```
+
